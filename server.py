@@ -6,13 +6,18 @@ import argparse
 import signal
 import sys
 import select
+import struct
 from multiprocessing.connection import Listener
 from array import array
 from threading import Thread
 
+cls = None
+
 def handler(signum, frame):
+    global cls
     print("Closing")
     del(cls)
+    exit(0)
 
 class ExponentServer:
     def __init__(self, port, password_file, host=None):
@@ -63,7 +68,7 @@ class ThreadedExponentServer(ExponentServer):
                 except OSError:
                     break 
 
-                if not value:
+                if value == "":
                     break
 
                 calc_value = int(value)**int(const_value)
@@ -74,6 +79,8 @@ class ThreadedExponentServer(ExponentServer):
             except EOFError:
                 print("Connection closing")
                 conn.close()
+        print("Connection closing")
+        conn.close()
 
 
 class NonThreadedExponentServer(ExponentServer):
@@ -111,44 +118,58 @@ class NonThreadedExponentServer(ExponentServer):
             except KeyError:
                 print("Got invalid password {}".format(password))
                 conn.send("NOAUTH".encode('utf-8'))
-                break
+                continue
 
             while True:
                 try:
-                    value = conn.recv(1024).decode('utf-8')
+                    a = conn.recv(1024)
+                    if a == bytes():
+                        continue
+                    value = struct.unpack("I", a)[0]
                 except ConnectionResetError:
+                    print("Connection Reset")
                     break
 
-                if not value: 
+                if value == "": 
+                    print("No value. Exiting.")
                     break
 
-                calc_value = int(value)**int(const_value)
+                try:
+                    calc_value = int(value)**int(const_value)
+                except ValueError:
+                    calc_value = 0
 
                 print("Received {}; Sending {}".format(value, calc_value))
                 
                 #You said you wanted big
                 conn.send(calc_value.to_bytes(2048, byteorder='little'))
             conn.close()
-        self.s.shutdown(SHUT_RD)
+        print("Shutting down")
+        self.s.shutdown(socket.SHUT_RD)
         self.s.close()
 
+    def __del__(self):
+        if self.s is not None:
+            self.s.shutdown(socket.SHUT_RD)
+            self.s.close()
 
-signal.signal(signal.SIGINT, handler)
+if __name__ == '__main__':
+    signal.signal(signal.SIGINT, handler)
 
-# Arguments
-parser = argparse.ArgumentParser(description="Start integer processing server")
-parser.add_argument('-p', '--port', type=int, help="port the server should "
-    "listen on", required=True)
-parser.add_argument('-f', '--csvfile', help="path to the csv password file",
-    required=True)
-parser.add_argument('-t', '--threaded', action='store_true', help='Use the '
-    'threaded version of the server. Default: False')
-args = parser.parse_args()
+    # Arguments
+    parser = argparse.ArgumentParser(description="Start integer processing server")
+    parser.add_argument('-p', '--port', type=int, help="port the server should "
+        "listen on", required=True)
+    parser.add_argument('-f', '--csvfile', help="path to the csv password file",
+        required=True)
+    parser.add_argument('-t', '--threaded', action='store_true', help='Use the '
+        'threaded version of the server. Default: False')
+    args = parser.parse_args()
 
-if args.threaded:
-    cls = ThreadedExponentServer
-else:
-    cls = NonThreadedExponentServer
+    if args.threaded:
+        cls = ThreadedExponentServer
+    else:
+        cls = NonThreadedExponentServer
 
-cls = cls(args.port, args.csvfile)
-cls.start()
+    cls = cls(args.port, args.csvfile)
+    cls.start()
